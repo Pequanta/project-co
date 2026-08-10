@@ -12,8 +12,6 @@ use crate::error::AppError;
 use crate::eventing::EventPublisher;
 use crate::repo::{NewSession, PlanRepo, ProgressRepo, SessionRepo, UserRepo};
 
-const MAX_KEY_ATTEMPTS: usize = 5;
-
 pub struct SessionService {
     db: PgPool,
     users: Arc<dyn UserRepo>,
@@ -247,16 +245,6 @@ impl SessionService {
         Ok(())
     }
 
-    async fn fresh_key(&self) -> Result<String, AppError> {
-        let mut conn = self.db.acquire().await?;
-        for _ in 0..MAX_KEY_ATTEMPTS {
-            let key = crate::domain::generate_session_key();
-            if self.sessions.get_by_key(&mut conn, &key).await?.is_none() {
-                return Ok(key);
-            }
-        }
-        Err(DomainError::KeyCollision.into())
-    }
 }
 
 pub struct StatusOverview {

@@ -1038,6 +1038,9 @@ fn parse_deadline(s: &str) -> Option<DateTime<Utc>> {
             return d.and_hms_opt(23, 59, 59).map(|n| n.and_utc());
         }
     }
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s.trim()) {
+        return Some(dt.with_timezone(&Utc));
+    }
     None
 }
 
@@ -1050,6 +1053,17 @@ mod tests {
         assert!(parse_deadline("2026-09-30").is_some());
         assert!(parse_deadline("30.09.2026").is_some());
         assert!(parse_deadline("not-a-date").is_none());
+    }
+
+    // The create flow stores the deadline as rfc3339 in the conversation
+    // payload and re-parses it on later steps (initial-plans `/done` and
+    // session-key entry). If parse_deadline can't read back its own rfc3339
+    // form, the flow aborts before creating the session.
+    #[test]
+    fn deadline_survives_rfc3339_roundtrip() {
+        let parsed = parse_deadline("2026-09-30").expect("human date parses");
+        let stored = parsed.to_rfc3339();
+        assert_eq!(parse_deadline(&stored), Some(parsed));
     }
 
     #[test]

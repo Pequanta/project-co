@@ -23,8 +23,6 @@ pub enum DomainError {
     OwnerCannotLeave,
     #[error("progress message must not be empty")]
     EmptyProgress,
-    #[error("session key collision, please retry")]
-    KeyCollision,
     #[error("session key already exists")]
     SessionKeyTaken,
     #[error("plan title must not be empty")]

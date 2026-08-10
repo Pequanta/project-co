@@ -10,4 +10,4 @@ pub use models::{
     MemberRole, Plan, PlanStatus, ProgressUpdate, Session, SessionMember, SessionStatus, User,
 };
 pub use progress_calc::{PlanCounts, ProgressCalculator, SimpleProgressCalculator};
-pub use session_key::{format_key, generate_session_key, normalize_key};
+pub use session_key::{format_key, normalize_key};
