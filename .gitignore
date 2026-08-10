@@ -1,0 +1,6 @@
+/target
+/.env
+*.session
+*.log
+/tmp
+/rustc-ice-*.txt
