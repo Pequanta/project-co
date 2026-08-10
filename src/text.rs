@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::domain::{progress_calc::progress_bar, Plan, PlanStatus, Session};
+use crate::domain::{progress_calc::progress_bar, Plan, PlanStatus, Session, SessionMode};
 
 pub fn bar(pct: u8) -> String {
     progress_bar(pct, 10)
@@ -19,6 +19,22 @@ pub fn welcome_text(name: &str) -> String {
     format!(
         "👋 Hi {name}!\n\nI help small teams track progress in a shared collaboration session.\n\nUse the buttons below, or type /help for all commands."
     )
+}
+
+/// Prompt shown during /create when choosing the session mode.
+pub fn mode_prompt() -> &'static str {
+    "How should progress be tracked?\n\n\
+     • `study` — everyone completes every task (each member has their own progress)\n\
+     • `collab` — split the work; each task is done by one member\n\n\
+     Reply `study` or `collab`."
+}
+
+/// Short human label for a mode.
+pub fn mode_label(mode: SessionMode) -> &'static str {
+    match mode {
+        SessionMode::Study => "📚 Study (everyone does every task)",
+        SessionMode::Collaboration => "🤝 Collaboration (split the work)",
+    }
 }
 
 pub fn help_text() -> String {
@@ -42,10 +58,12 @@ pub fn created_confirmation(session: &Session) -> String {
     format!(
         "✅ Your collaboration session has been created.\n\n\
          Project: {}\n\
+         Mode: {}\n\
          Deadline: {}\n\n\
          Session key:\n`{}`\n\n\
          Share this key with the people who should join your collaboration.",
         session.project_name,
+        mode_label(session.mode),
         session.deadline.format("%Y-%m-%d"),
         crate::domain::format_key(&session.session_key),
     )
@@ -113,13 +131,15 @@ pub fn dashboard_text(
     project_description: Option<&str>,
     deadline: DateTime<Utc>,
     now: DateTime<Utc>,
+    mode: SessionMode,
     pct: u8,
     completed: i64,
     in_progress: i64,
     remaining: i64,
     cancelled: i64,
     member_names: &[String],
-    recent: &[(String, String)], // (author, message)
+    member_progress: &[(String, u8)], // (member, percent)
+    recent: &[(String, String)],      // (author, message)
 ) -> String {
     let days = days_remaining(deadline, now);
     let days_line = if days == 0 {
@@ -132,16 +152,38 @@ pub fn dashboard_text(
         )
     };
 
+    let overall_label = match mode {
+        SessionMode::Study => "Overall (avg)",
+        SessionMode::Collaboration => "Progress",
+    };
     let mut out = format!(
-        "📊 *{project_name}*\n{desc}\n\n{days_line}\n\n\
-         Progress: *{pct}%*\n{bar}\n\n\
-         📋 Plans\n\
+        "📊 *{project_name}*\n{desc}\n\n{mode_line}\n{days_line}\n\n\
+         {overall_label}: *{pct}%*\n{bar}\n",
+        desc = project_description.unwrap_or("").trim(),
+        mode_line = mode_label(mode),
+        bar = bar(pct),
+    );
+
+    // Per-member progress: the headline in study mode, contribution shares in
+    // collaboration mode.
+    if !member_progress.is_empty() {
+        let heading = match mode {
+            SessionMode::Study => "\n🧑‍🤝‍🧑 Each member",
+            SessionMode::Collaboration => "\n🧑‍🤝‍🧑 Contributions",
+        };
+        out.push_str(heading);
+        out.push('\n');
+        for (name, p) in member_progress {
+            out.push_str(&format!("{} {p}% — {name}\n", bar(*p)));
+        }
+    }
+
+    out.push_str(&format!(
+        "\n📋 Plans\n\
          ✅ Completed: {completed}\n\
          🔄 In progress: {in_progress}\n\
          ⬜ Remaining: {remaining}\n",
-        desc = project_description.unwrap_or("").trim(),
-        bar = bar(pct),
-    );
+    ));
     if cancelled > 0 {
         out.push_str(&format!("❌ Cancelled: {cancelled}\n"));
     }

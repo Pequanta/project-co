@@ -31,10 +31,11 @@ use crate::notify::{NotificationService, Notifier};
 use crate::rate_limit::WebhookRateLimiter;
 use crate::repo::{
     pg::{
-        PgConversationRepo, PgDedupeRepo, PgNotificationRepo, PgPlanRepo, PgProgressRepo,
-        PgSessionRepo, PgUserRepo,
+        PgConversationRepo, PgDedupeRepo, PgNotificationRepo, PgPlanCompletionRepo, PgPlanRepo,
+        PgProgressRepo, PgSessionRepo, PgUserRepo,
     },
-    ConversationRepo, DedupeRepo, NotificationRepo, PlanRepo, ProgressRepo, SessionRepo, UserRepo,
+    ConversationRepo, DedupeRepo, NotificationRepo, PlanCompletionRepo, PlanRepo, ProgressRepo,
+    SessionRepo, UserRepo,
 };
 use crate::state::AppState;
 use crate::telegram::gateway::{ReqwestGateway, TelegramGateway};
@@ -66,6 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let users_repo: Arc<dyn UserRepo> = Arc::new(PgUserRepo);
     let sessions_repo: Arc<dyn SessionRepo> = Arc::new(PgSessionRepo);
     let plans_repo: Arc<dyn PlanRepo> = Arc::new(PgPlanRepo);
+    let completions_repo: Arc<dyn PlanCompletionRepo> = Arc::new(PgPlanCompletionRepo);
     let progress_repo: Arc<dyn ProgressRepo> = Arc::new(PgProgressRepo);
     let notifications_repo: Arc<dyn NotificationRepo> = Arc::new(PgNotificationRepo);
     let conversations_repo: Arc<dyn ConversationRepo> = Arc::new(PgConversationRepo);
@@ -79,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         users_repo.clone(),
         sessions_repo.clone(),
         plans_repo.clone(),
+        completions_repo.clone(),
         progress_repo.clone(),
         notifications_repo.clone(),
         gateway.clone(),
@@ -95,6 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         users_repo.clone(),
         sessions_repo.clone(),
         plans_repo.clone(),
+        completions_repo.clone(),
         progress_repo.clone(),
         publisher.clone(),
         calculator.clone(),
@@ -103,6 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pool.clone(),
         sessions_repo.clone(),
         plans_repo.clone(),
+        completions_repo.clone(),
         publisher.clone(),
     ));
     let progress_service = Arc::new(ProgressService::new(

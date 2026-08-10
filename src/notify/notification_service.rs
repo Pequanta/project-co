@@ -3,11 +3,15 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::PgPool;
 
-use crate::domain::{DomainEvent, ProgressCalculator, SessionMember};
+use crate::domain::{
+    study_overall_percent, DomainEvent, ProgressCalculator, SessionMember, SessionMode,
+};
 use crate::error::AppError;
 use crate::notify::messages::{event_text, NotifyCtx};
 use crate::notify::Notifier;
-use crate::repo::{NotificationRepo, PlanRepo, ProgressRepo, SessionRepo, UserRepo};
+use crate::repo::{
+    NotificationRepo, PlanCompletionRepo, PlanRepo, ProgressRepo, SessionRepo, UserRepo,
+};
 use crate::telegram::gateway::TelegramGateway;
 use crate::text;
 
@@ -19,6 +23,7 @@ pub struct NotificationService {
     users: Arc<dyn UserRepo>,
     sessions: Arc<dyn SessionRepo>,
     plans: Arc<dyn PlanRepo>,
+    completions: Arc<dyn PlanCompletionRepo>,
     progress: Arc<dyn ProgressRepo>,
     notifications: Arc<dyn NotificationRepo>,
     gateway: Arc<dyn TelegramGateway>,
@@ -32,6 +37,7 @@ impl NotificationService {
         users: Arc<dyn UserRepo>,
         sessions: Arc<dyn SessionRepo>,
         plans: Arc<dyn PlanRepo>,
+        completions: Arc<dyn PlanCompletionRepo>,
         progress: Arc<dyn ProgressRepo>,
         notifications: Arc<dyn NotificationRepo>,
         gateway: Arc<dyn TelegramGateway>,
@@ -42,6 +48,7 @@ impl NotificationService {
             users,
             sessions,
             plans,
+            completions,
             progress,
             notifications,
             gateway,
@@ -92,7 +99,23 @@ impl Notifier for NotificationService {
             _ => None,
         };
         let counts = self.plans.counts_by_session(&mut conn, session_id).await?;
-        let progress_pct = self.calculator.calculate(counts);
+        let progress_pct = match session.mode {
+            SessionMode::Collaboration => self.calculator.calculate(counts),
+            SessionMode::Study => {
+                let per_member: Vec<i64> = self
+                    .completions
+                    .completed_counts_by_session(&mut conn, session_id)
+                    .await?
+                    .into_iter()
+                    .map(|(_, c)| c)
+                    .collect();
+                // Members with zero completions are absent from the grouped
+                // counts, so pad to the full member roster for a correct avg.
+                let mut counts_vec = per_member;
+                counts_vec.resize(members.len(), 0);
+                study_overall_percent(&counts_vec, counts.total_active())
+            }
+        };
 
         let ctx = NotifyCtx {
             event,

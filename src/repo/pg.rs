@@ -14,8 +14,8 @@ use crate::domain::{
     SessionStatus, User,
 };
 use crate::repo::{
-    Conversation, ConversationRepo, DedupeRepo, EventRepo, NewSession, NotificationRepo, PlanRepo,
-    ProgressRepo, SessionRepo, UserRepo,
+    Conversation, ConversationRepo, DedupeRepo, EventRepo, NewSession, NotificationRepo,
+    PlanCompletionRepo, PlanRepo, ProgressRepo, SessionRepo, UserRepo,
 };
 
 pub struct PgUserRepo;
@@ -67,16 +67,17 @@ impl SessionRepo for PgSessionRepo {
     ) -> Result<Session, sqlx::Error> {
         sqlx::query_as::<_, Session>(
             r#"INSERT INTO sessions
-                 (session_key, project_name, project_description, deadline, created_by)
-               VALUES ($1, $2, $3, $4, $5)
+                 (session_key, project_name, project_description, deadline, created_by, mode)
+               VALUES ($1, $2, $3, $4, $5, $6)
                RETURNING id, session_key, project_name, project_description, deadline,
-                         created_by, status, last_reminder_at, created_at, updated_at"#,
+                         created_by, status, mode, last_reminder_at, created_at, updated_at"#,
         )
         .bind(&new_session.session_key)
         .bind(&new_session.project_name)
         .bind(new_session.project_description.as_deref())
         .bind(new_session.deadline)
         .bind(new_session.created_by)
+        .bind(new_session.mode)
         .fetch_one(exec)
         .await
     }
@@ -88,7 +89,7 @@ impl SessionRepo for PgSessionRepo {
     ) -> Result<Option<Session>, sqlx::Error> {
         sqlx::query_as::<_, Session>(
             "SELECT id, session_key, project_name, project_description, deadline, created_by, \
-                    status, last_reminder_at, created_at, updated_at \
+                    status, mode, last_reminder_at, created_at, updated_at \
              FROM sessions WHERE id = $1",
         )
         .bind(id)
@@ -103,7 +104,7 @@ impl SessionRepo for PgSessionRepo {
     ) -> Result<Option<Session>, sqlx::Error> {
         sqlx::query_as::<_, Session>(
             "SELECT id, session_key, project_name, project_description, deadline, created_by, \
-                    status, last_reminder_at, created_at, updated_at \
+                    status, mode, last_reminder_at, created_at, updated_at \
              FROM sessions WHERE session_key = $1",
         )
         .bind(key)
@@ -118,7 +119,7 @@ impl SessionRepo for PgSessionRepo {
     ) -> Result<Vec<Session>, sqlx::Error> {
         sqlx::query_as::<_, Session>(
             r#"SELECT s.id, s.session_key, s.project_name, s.project_description, s.deadline,
-                      s.created_by, s.status, s.last_reminder_at, s.created_at, s.updated_at
+                      s.created_by, s.status, s.mode, s.last_reminder_at, s.created_at, s.updated_at
                FROM sessions s
                JOIN session_members m ON m.session_id = s.id
                WHERE m.user_id = $1
@@ -136,7 +137,7 @@ impl SessionRepo for PgSessionRepo {
     ) -> Result<Vec<Session>, sqlx::Error> {
         sqlx::query_as::<_, Session>(
             r#"SELECT id, session_key, project_name, project_description, deadline, created_by,
-                      status, last_reminder_at, created_at, updated_at
+                      status, mode, last_reminder_at, created_at, updated_at
                FROM sessions
                WHERE status = 'active'
                  AND (last_reminder_at IS NULL
@@ -338,6 +339,63 @@ impl PlanRepo for PgPlanRepo {
         )
         .bind(session_id)
         .fetch_one(exec)
+        .await
+    }
+}
+
+pub struct PgPlanCompletionRepo;
+
+#[async_trait]
+impl PlanCompletionRepo for PgPlanCompletionRepo {
+    async fn insert(
+        &self,
+        exec: &mut PgConnection,
+        plan_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query(
+            "INSERT INTO plan_completions (plan_id, user_id) VALUES ($1, $2) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(plan_id)
+        .bind(user_id)
+        .execute(exec)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    async fn completed_counts_by_session(
+        &self,
+        exec: &mut PgConnection,
+        session_id: Uuid,
+    ) -> Result<Vec<(Uuid, i64)>, sqlx::Error> {
+        sqlx::query_as::<_, (Uuid, i64)>(
+            r#"SELECT pc.user_id, count(*) AS completed
+               FROM plan_completions pc
+               JOIN plans p ON p.id = pc.plan_id
+               WHERE p.session_id = $1
+               GROUP BY pc.user_id"#,
+        )
+        .bind(session_id)
+        .fetch_all(exec)
+        .await
+    }
+
+    async fn completed_plan_ids_for_member(
+        &self,
+        exec: &mut PgConnection,
+        session_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Vec<Uuid>, sqlx::Error> {
+        sqlx::query_scalar::<_, Uuid>(
+            r#"SELECT pc.plan_id
+               FROM plan_completions pc
+               JOIN plans p ON p.id = pc.plan_id
+               WHERE p.session_id = $1 AND pc.user_id = $2"#,
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .fetch_all(exec)
         .await
     }
 }

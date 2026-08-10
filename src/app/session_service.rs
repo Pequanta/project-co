@@ -6,28 +6,32 @@ use uuid::Uuid;
 
 use crate::app::authorization::assert_member;
 use crate::domain::{
-    DomainError, MemberRole, PlanCounts, ProgressCalculator, Session, SessionStatus, User,
+    member_percent, study_overall_percent, DomainError, MemberRole, PlanCounts, ProgressCalculator,
+    Session, SessionMode, SessionStatus, User,
 };
 use crate::error::AppError;
 use crate::eventing::EventPublisher;
-use crate::repo::{NewSession, PlanRepo, ProgressRepo, SessionRepo, UserRepo};
+use crate::repo::{NewSession, PlanCompletionRepo, PlanRepo, ProgressRepo, SessionRepo, UserRepo};
 
 pub struct SessionService {
     db: PgPool,
     users: Arc<dyn UserRepo>,
     sessions: Arc<dyn SessionRepo>,
     plans: Arc<dyn PlanRepo>,
+    completions: Arc<dyn PlanCompletionRepo>,
     progress: Arc<dyn ProgressRepo>,
     events: Arc<dyn EventPublisher>,
     calculator: Arc<dyn ProgressCalculator>,
 }
 
 impl SessionService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: PgPool,
         users: Arc<dyn UserRepo>,
         sessions: Arc<dyn SessionRepo>,
         plans: Arc<dyn PlanRepo>,
+        completions: Arc<dyn PlanCompletionRepo>,
         progress: Arc<dyn ProgressRepo>,
         events: Arc<dyn EventPublisher>,
         calculator: Arc<dyn ProgressCalculator>,
@@ -37,6 +41,7 @@ impl SessionService {
             users,
             sessions,
             plans,
+            completions,
             progress,
             events,
             calculator,
@@ -44,6 +49,7 @@ impl SessionService {
     }
 
     /// Create a session; the creator becomes `owner`. Collision-safe key.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_session(
         &self,
         actor: &User,
@@ -51,6 +57,7 @@ impl SessionService {
         project_name: String,
         project_description: Option<String>,
         deadline: DateTime<Utc>,
+        mode: SessionMode,
         initial_plans: Vec<String>,
     ) -> Result<Session, AppError> {
         let project_name = project_name.trim().to_string();
@@ -67,7 +74,12 @@ impl SessionService {
         }
 
         let mut conn = self.db.acquire().await?;
-        if self.sessions.get_by_key(&mut conn, &session_key).await?.is_some() {
+        if self
+            .sessions
+            .get_by_key(&mut conn, &session_key)
+            .await?
+            .is_some()
+        {
             return Err(DomainError::SessionKeyTaken.into());
         }
 
@@ -84,6 +96,7 @@ impl SessionService {
                         .filter(|s| !s.is_empty()),
                     deadline,
                     created_by: actor.id,
+                    mode,
                 },
             )
             .await?;
@@ -174,8 +187,13 @@ impl SessionService {
             .await?
             .ok_or(AppError::Domain(DomainError::SessionNotFound))?;
         let counts = self.plans.counts_by_session(&mut conn, session_id).await?;
-        let progress = self.calculator.calculate(counts);
         let members = self.sessions.members(&mut conn, session_id).await?;
+
+        let completed_counts = self
+            .completions
+            .completed_counts_by_session(&mut conn, session_id)
+            .await?;
+        let total_active = counts.total_active();
 
         let mut member_views = Vec::with_capacity(members.len());
         for m in members {
@@ -187,8 +205,28 @@ impl SessionService {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
             });
-            member_views.push(MemberView { user, role: m.role });
+            let completed = completed_counts
+                .iter()
+                .find(|(uid, _)| *uid == m.user_id)
+                .map(|(_, c)| *c)
+                .unwrap_or(0);
+            member_views.push(MemberView {
+                user,
+                role: m.role,
+                completed,
+                percent: member_percent(completed, total_active),
+            });
         }
+
+        // Overall progress is mode-specific: collaboration counts globally
+        // completed plans; study averages each member's personal completion.
+        let progress = match session.mode {
+            SessionMode::Collaboration => self.calculator.calculate(counts),
+            SessionMode::Study => {
+                let per_member: Vec<i64> = member_views.iter().map(|m| m.completed).collect();
+                study_overall_percent(&per_member, total_active)
+            }
+        };
 
         let recent = self.progress.recent(&mut conn, session_id, 5).await?;
         let mut recent_views = Vec::with_capacity(recent.len());
@@ -244,7 +282,6 @@ impl SessionService {
         tx.commit().await?;
         Ok(())
     }
-
 }
 
 pub struct StatusOverview {
@@ -258,6 +295,8 @@ pub struct StatusOverview {
 pub struct MemberView {
     pub user: User,
     pub role: MemberRole,
+    pub completed: i64,
+    pub percent: u8,
 }
 
 pub struct RecentUpdateView {

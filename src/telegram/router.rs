@@ -11,7 +11,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::app::{PlanService, ProgressService, SessionService, UserService};
-use crate::domain::{Session, User};
+use crate::domain::{Session, SessionMode, User};
 use crate::error::AppError;
 use crate::repo::ConversationRepo;
 use crate::telegram::conversation::ConvState;
@@ -342,6 +342,11 @@ impl BotRouter {
                 format!("{icon} {}", m.user.display_name)
             })
             .collect();
+        let member_progress: Vec<(String, u8)> = overview
+            .members
+            .iter()
+            .map(|m| (m.user.display_name.clone(), m.percent))
+            .collect();
         let recent: Vec<(String, String)> = overview
             .recent_updates
             .iter()
@@ -352,12 +357,14 @@ impl BotRouter {
             overview.session.project_description.as_deref(),
             overview.session.deadline,
             Utc::now(),
+            overview.session.mode,
             overview.progress,
             overview.counts.completed,
             overview.counts.in_progress,
             overview.counts.planned,
             overview.counts.cancelled,
             &member_names,
+            &member_progress,
             &recent,
         );
         self.gateway.send_message(chat_id, &msg, None).await?;
@@ -414,16 +421,18 @@ impl BotRouter {
         chat_id: i64,
         session: &Session,
     ) -> Result<(), AppError> {
-        let plans = self.plans.list_plans(user.id, session.id).await?;
-        let active: Vec<_> = plans.iter().filter(|p| p.status.is_active()).collect();
+        let active = self.plans.completable_plans(user.id, session.id).await?;
         if active.is_empty() {
-            self.gateway
-                .send_message(
-                    chat_id,
-                    &format!("No active plans in *{}*. 🎉", session.project_name),
-                    None,
-                )
-                .await?;
+            let msg = match session.mode {
+                SessionMode::Study => format!(
+                    "You've completed everything in *{}*. 🎉",
+                    session.project_name
+                ),
+                SessionMode::Collaboration => {
+                    format!("No active plans in *{}*. 🎉", session.project_name)
+                }
+            };
+            self.gateway.send_message(chat_id, &msg, None).await?;
             return Ok(());
         }
         let buttons = active
@@ -734,11 +743,38 @@ impl BotRouter {
                     self.set_conv(
                         user.id,
                         chat_id,
-                        ConvState::AwaitingInitialPlans,
+                        ConvState::AwaitingProjectMode,
                         json!({
                             "project_name": name,
                             "project_description": desc,
                             "deadline": deadline.to_rfc3339(),
+                        }),
+                    )
+                    .await?;
+                    self.gateway
+                        .send_message(chat_id, text::mode_prompt(), None)
+                        .await?;
+                }
+                None => {
+                    self.gateway
+                        .send_message(chat_id, "That doesn't look like a valid date. Use `YYYY-MM-DD`, e.g. `2026-09-30`.", None)
+                        .await?;
+                }
+            },
+            ConvState::AwaitingProjectMode => match parse_mode(text) {
+                Some(mode) => {
+                    let name = payload_get(&payload, "project_name").unwrap_or_default();
+                    let desc = payload_get(&payload, "project_description").unwrap_or_default();
+                    let deadline = payload_get(&payload, "deadline").unwrap_or_default();
+                    self.set_conv(
+                        user.id,
+                        chat_id,
+                        ConvState::AwaitingInitialPlans,
+                        json!({
+                            "project_name": name,
+                            "project_description": desc,
+                            "deadline": deadline,
+                            "mode": mode_str(mode),
                             "plans": []
                         }),
                     )
@@ -753,7 +789,7 @@ impl BotRouter {
                 }
                 None => {
                     self.gateway
-                        .send_message(chat_id, "That doesn't look like a valid date. Use `YYYY-MM-DD`, e.g. `2026-09-30`.", None)
+                        .send_message(chat_id, text::mode_prompt(), None)
                         .await?;
                 }
             },
@@ -764,6 +800,7 @@ impl BotRouter {
                     let deadline_raw = payload_get(&payload, "deadline").unwrap_or_default();
                     let deadline = parse_deadline(&deadline_raw)
                         .ok_or_else(|| AppError::Internal("missing deadline".into()))?;
+                    let mode = payload_get(&payload, "mode").unwrap_or_default();
                     let plans = payload_get_array(&payload, "plans");
                     self.set_conv(
                         user.id,
@@ -773,6 +810,7 @@ impl BotRouter {
                             "project_name": name,
                             "project_description": desc,
                             "deadline": deadline.to_rfc3339(),
+                            "mode": mode,
                             "plans": plans
                         }),
                     )
@@ -795,6 +833,7 @@ impl BotRouter {
                     let name = payload_get(&payload, "project_name").unwrap_or_default();
                     let desc = payload_get(&payload, "project_description").unwrap_or_default();
                     let deadline = payload_get(&payload, "deadline").unwrap_or_default();
+                    let mode = payload_get(&payload, "mode").unwrap_or_default();
                     self.set_conv(
                         user.id,
                         chat_id,
@@ -803,6 +842,7 @@ impl BotRouter {
                             "project_name": name,
                             "project_description": desc,
                             "deadline": deadline,
+                            "mode": mode,
                             "plans": plans
                         }),
                     )
@@ -834,6 +874,8 @@ impl BotRouter {
                 let deadline_raw = payload_get(&payload, "deadline").unwrap_or_default();
                 let deadline = parse_deadline(&deadline_raw)
                     .ok_or_else(|| AppError::Internal("missing deadline".into()))?;
+                let mode = parse_mode(&payload_get(&payload, "mode").unwrap_or_default())
+                    .unwrap_or(SessionMode::Collaboration);
                 let plans = payload_get_array(&payload, "plans");
 
                 match self
@@ -844,6 +886,7 @@ impl BotRouter {
                         name,
                         if desc.is_empty() { None } else { Some(desc) },
                         deadline,
+                        mode,
                         plans,
                     )
                     .await
@@ -856,10 +899,16 @@ impl BotRouter {
                             .await?;
                     }
                     Err(e) => {
-                        let prompt = if matches!(e, AppError::Domain(crate::domain::DomainError::InvalidSessionKey)) {
+                        let prompt = if matches!(
+                            e,
+                            AppError::Domain(crate::domain::DomainError::InvalidSessionKey)
+                        ) {
                             "That session key is invalid. Enter a valid key like `AB7K-X92P`:
 "
-                        } else if matches!(e, AppError::Domain(crate::domain::DomainError::SessionKeyTaken)) {
+                        } else if matches!(
+                            e,
+                            AppError::Domain(crate::domain::DomainError::SessionKeyTaken)
+                        ) {
                             "That session key is already taken. Try another one:
 "
                         } else {
@@ -1009,6 +1058,23 @@ fn parse_uuid(s: &str) -> Option<Uuid> {
     Uuid::parse_str(s).ok()
 }
 
+/// Loosely parse the user's mode choice from the /create flow.
+fn parse_mode(s: &str) -> Option<SessionMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "study" | "s" | "1" => Some(SessionMode::Study),
+        "collab" | "collaboration" | "c" | "2" => Some(SessionMode::Collaboration),
+        _ => None,
+    }
+}
+
+/// Canonical payload token for a mode (round-trips through `parse_mode`).
+fn mode_str(mode: SessionMode) -> &'static str {
+    match mode {
+        SessionMode::Study => "study",
+        SessionMode::Collaboration => "collab",
+    }
+}
+
 fn payload_get(payload: &Value, key: &str) -> Option<String> {
     payload
         .get(key)
@@ -1053,6 +1119,22 @@ mod tests {
         assert!(parse_deadline("2026-09-30").is_some());
         assert!(parse_deadline("30.09.2026").is_some());
         assert!(parse_deadline("not-a-date").is_none());
+    }
+
+    #[test]
+    fn mode_parsing_and_roundtrip() {
+        assert_eq!(parse_mode("study"), Some(SessionMode::Study));
+        assert_eq!(parse_mode("  Study "), Some(SessionMode::Study));
+        assert_eq!(parse_mode("collab"), Some(SessionMode::Collaboration));
+        assert_eq!(
+            parse_mode("collaboration"),
+            Some(SessionMode::Collaboration)
+        );
+        assert_eq!(parse_mode("2"), Some(SessionMode::Collaboration));
+        assert_eq!(parse_mode("nonsense"), None);
+        for m in [SessionMode::Study, SessionMode::Collaboration] {
+            assert_eq!(parse_mode(mode_str(m)), Some(m));
+        }
     }
 
     // The create flow stores the deadline as rfc3339 in the conversation

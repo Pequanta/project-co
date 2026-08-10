@@ -41,6 +41,32 @@ pub fn progress_bar(percent: u8, width: usize) -> String {
     format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
 }
 
+/// A single member's progress: plans they completed over the total active
+/// plans. Same computation in both study and collaboration modes.
+pub fn member_percent(my_completed: i64, total_active: i64) -> u8 {
+    if total_active <= 0 {
+        return 0;
+    }
+    let pct = (my_completed.max(0) as f64 / total_active as f64) * 100.0;
+    pct.round().clamp(0.0, 100.0) as u8
+}
+
+/// Overall progress for a study session: the average of each member's
+/// percentage. Equivalent to `sum(completions) / (members * total_active)`
+/// since every member shares the same denominator.
+pub fn study_overall_percent(member_completions: &[i64], total_active: i64) -> u8 {
+    let members = member_completions.len() as i64;
+    if members == 0 || total_active <= 0 {
+        return 0;
+    }
+    let done: i64 = member_completions
+        .iter()
+        .map(|c| (*c).clamp(0, total_active))
+        .sum();
+    let pct = (done as f64 / (members * total_active) as f64) * 100.0;
+    pct.round().clamp(0.0, 100.0) as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +107,36 @@ mod tests {
         assert_eq!(progress_bar(60, 10), "██████░░░░");
         assert_eq!(progress_bar(0, 10), "░░░░░░░░░░");
         assert_eq!(progress_bar(100, 10), "██████████");
+    }
+
+    #[test]
+    fn member_percent_basic() {
+        assert_eq!(member_percent(0, 0), 0);
+        assert_eq!(member_percent(5, 0), 0);
+        assert_eq!(member_percent(3, 10), 30);
+        assert_eq!(member_percent(1, 3), 33);
+        assert_eq!(member_percent(2, 3), 67);
+        assert_eq!(member_percent(10, 10), 100);
+    }
+
+    #[test]
+    fn study_overall_is_average_of_members() {
+        // Two members: 3/10 and 5/10 -> (30 + 50) / 2 = 40.
+        assert_eq!(study_overall_percent(&[3, 5], 10), 40);
+        // Everyone done -> 100.
+        assert_eq!(study_overall_percent(&[10, 10, 10], 10), 100);
+        // No plans or no members -> 0.
+        assert_eq!(study_overall_percent(&[0, 0], 0), 0);
+        assert_eq!(study_overall_percent(&[], 10), 0);
+    }
+
+    #[test]
+    fn collaboration_shares_sum_to_overall() {
+        // 6 of 10 active plans done, split 4 + 2 between two members.
+        let total_active = 10;
+        let a = member_percent(4, total_active);
+        let b = member_percent(2, total_active);
+        let overall = SimpleProgressCalculator.calculate(counts(6, 2, 2, 0));
+        assert_eq!(a + b, overall);
     }
 }

@@ -9,7 +9,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::domain::{
-    DomainEvent, MemberRole, Plan, PlanCounts, ProgressUpdate, Session, SessionMember,
+    DomainEvent, MemberRole, Plan, PlanCounts, ProgressUpdate, Session, SessionMember, SessionMode,
     SessionStatus, User,
 };
 
@@ -36,6 +36,7 @@ pub struct NewSession {
     pub project_description: Option<String>,
     pub deadline: DateTime<Utc>,
     pub created_by: Uuid,
+    pub mode: SessionMode,
 }
 
 #[async_trait]
@@ -157,6 +158,36 @@ pub trait PlanRepo: Send + Sync {
         exec: &mut PgConnection,
         session_id: Uuid,
     ) -> Result<PlanCounts, sqlx::Error>;
+}
+
+/// Per-member plan completion. Backs per-member progress in both modes and,
+/// in study mode, drives which plans a member still owes.
+#[async_trait]
+pub trait PlanCompletionRepo: Send + Sync {
+    /// Record that `user_id` completed `plan_id`. Idempotent: returns `true`
+    /// when a new row was inserted, `false` if it already existed.
+    async fn insert(
+        &self,
+        exec: &mut PgConnection,
+        plan_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<bool, sqlx::Error>;
+
+    /// (user_id, completed_count) for every member with at least one
+    /// completion in the session.
+    async fn completed_counts_by_session(
+        &self,
+        exec: &mut PgConnection,
+        session_id: Uuid,
+    ) -> Result<Vec<(Uuid, i64)>, sqlx::Error>;
+
+    /// Plan ids in the session already completed by `user_id`.
+    async fn completed_plan_ids_for_member(
+        &self,
+        exec: &mut PgConnection,
+        session_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Vec<Uuid>, sqlx::Error>;
 }
 
 #[async_trait]

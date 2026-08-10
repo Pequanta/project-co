@@ -20,6 +20,20 @@ pub enum SessionStatus {
     Archived,
 }
 
+/// How progress is interpreted for a session.
+///
+/// `Collaboration`: members split the plan list; completing a plan marks it
+/// globally done and attributes it to the completer.
+/// `Study`: every member completes every plan independently; a member's
+/// progress is the share of plans they personally completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
+pub enum SessionMode {
+    Study,
+    Collaboration,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
@@ -79,6 +93,7 @@ pub struct Session {
     pub deadline: DateTime<Utc>,
     pub created_by: Uuid,
     pub status: SessionStatus,
+    pub mode: SessionMode,
     pub last_reminder_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
