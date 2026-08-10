@@ -25,6 +25,8 @@ pub enum DomainError {
     EmptyProgress,
     #[error("session key collision, please retry")]
     KeyCollision,
+    #[error("session key already exists")]
+    SessionKeyTaken,
     #[error("plan title must not be empty")]
     EmptyTitle,
     #[error("project name must not be empty")]

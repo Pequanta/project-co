@@ -49,6 +49,7 @@ impl SessionService {
     pub async fn create_session(
         &self,
         actor: &User,
+        raw_session_key: String,
         project_name: String,
         project_description: Option<String>,
         deadline: DateTime<Utc>,
@@ -62,7 +63,15 @@ impl SessionService {
             return Err(DomainError::InvalidDeadline.into());
         }
 
-        let session_key = self.fresh_key().await?;
+        let session_key = crate::domain::normalize_key(&raw_session_key);
+        if session_key.len() != 8 {
+            return Err(DomainError::InvalidSessionKey.into());
+        }
+
+        let mut conn = self.db.acquire().await?;
+        if self.sessions.get_by_key(&mut conn, &session_key).await?.is_some() {
+            return Err(DomainError::SessionKeyTaken.into());
+        }
 
         let mut tx = self.db.begin().await?;
         let session = self

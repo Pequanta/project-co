@@ -9,6 +9,7 @@ pub enum ConvState {
     AwaitingProjectDescription,
     AwaitingProjectDeadline,
     AwaitingInitialPlans,
+    AwaitingCreateSessionKey,
     AwaitingSessionKey,
     AwaitingProgressMessage,
     AwaitingPlanTitle,
@@ -22,6 +23,7 @@ impl ConvState {
             ConvState::AwaitingProjectDescription => "awaiting_project_description",
             ConvState::AwaitingProjectDeadline => "awaiting_project_deadline",
             ConvState::AwaitingInitialPlans => "awaiting_initial_plans",
+            ConvState::AwaitingCreateSessionKey => "awaiting_create_session_key",
             ConvState::AwaitingSessionKey => "awaiting_session_key",
             ConvState::AwaitingProgressMessage => "awaiting_progress_message",
             ConvState::AwaitingPlanTitle => "awaiting_plan_title",
@@ -34,6 +36,7 @@ impl ConvState {
             "awaiting_project_description" => ConvState::AwaitingProjectDescription,
             "awaiting_project_deadline" => ConvState::AwaitingProjectDeadline,
             "awaiting_initial_plans" => ConvState::AwaitingInitialPlans,
+            "awaiting_create_session_key" => ConvState::AwaitingCreateSessionKey,
             "awaiting_session_key" => ConvState::AwaitingSessionKey,
             "awaiting_progress_message" => ConvState::AwaitingProgressMessage,
             "awaiting_plan_title" => ConvState::AwaitingPlanTitle,
@@ -51,6 +54,8 @@ mod tests {
         for s in [
             ConvState::Idle,
             ConvState::AwaitingProjectName,
+            ConvState::AwaitingInitialPlans,
+            ConvState::AwaitingCreateSessionKey,
             ConvState::AwaitingProgressMessage,
         ] {
             assert_eq!(ConvState::from_str(s.as_str()), s);

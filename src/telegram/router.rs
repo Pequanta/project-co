@@ -102,11 +102,6 @@ impl BotRouter {
         let user = self.ensure_user(from).await?;
         let text = msg.text.clone().unwrap_or_default();
 
-        if let Some(cmd) = text.strip_prefix('/') {
-            self.run_command(&user, msg.chat.id, cmd).await?;
-            return Ok(());
-        }
-
         let conv = self.get_conv(user.id).await?;
         if let Some(c) = conv {
             let state = ConvState::from_str(&c.state);
@@ -114,6 +109,11 @@ impl BotRouter {
                 self.continue_flow(&user, msg.chat.id, state, &text).await?;
                 return Ok(());
             }
+        }
+
+        if let Some(cmd) = text.strip_prefix('/') {
+            self.run_command(&user, msg.chat.id, cmd).await?;
+            return Ok(());
         }
 
         // Natural-language fallback: interpret plain text as a progress update.
@@ -765,20 +765,24 @@ impl BotRouter {
                     let deadline = parse_deadline(&deadline_raw)
                         .ok_or_else(|| AppError::Internal("missing deadline".into()))?;
                     let plans = payload_get_array(&payload, "plans");
-                    let session = self
-                        .sessions
-                        .create_session(
-                            user,
-                            name,
-                            if desc.is_empty() { None } else { Some(desc) },
-                            deadline,
-                            plans,
-                        )
-                        .await?;
-                    self.set_conv(user.id, chat_id, ConvState::Idle, json!({}))
-                        .await?;
+                    self.set_conv(
+                        user.id,
+                        chat_id,
+                        ConvState::AwaitingCreateSessionKey,
+                        json!({
+                            "project_name": name,
+                            "project_description": desc,
+                            "deadline": deadline.to_rfc3339(),
+                            "plans": plans
+                        }),
+                    )
+                    .await?;
                     self.gateway
-                        .send_message(chat_id, &text::created_confirmation(&session), None)
+                        .send_message(
+                            chat_id,
+                            "Almost done. Enter your desired *session key* for this collaboration (e.g. `AB7K-X92P`):",
+                            None,
+                        )
                         .await?;
                 } else {
                     let mut plans = payload_get_array(&payload, "plans");
@@ -810,6 +814,62 @@ impl BotRouter {
                             None,
                         )
                         .await?;
+                }
+            }
+            ConvState::AwaitingCreateSessionKey => {
+                let key = text.trim();
+                if key.is_empty() {
+                    self.gateway
+                        .send_message(
+                            chat_id,
+                            "Please enter a session key. It should be 8 alphanumeric characters, like `AB7K-X92P`.",
+                            None,
+                        )
+                        .await?;
+                    return Ok(());
+                }
+
+                let name = payload_get(&payload, "project_name").unwrap_or_default();
+                let desc = payload_get(&payload, "project_description").unwrap_or_default();
+                let deadline_raw = payload_get(&payload, "deadline").unwrap_or_default();
+                let deadline = parse_deadline(&deadline_raw)
+                    .ok_or_else(|| AppError::Internal("missing deadline".into()))?;
+                let plans = payload_get_array(&payload, "plans");
+
+                match self
+                    .sessions
+                    .create_session(
+                        user,
+                        key.to_string(),
+                        name,
+                        if desc.is_empty() { None } else { Some(desc) },
+                        deadline,
+                        plans,
+                    )
+                    .await
+                {
+                    Ok(session) => {
+                        self.set_conv(user.id, chat_id, ConvState::Idle, json!({}))
+                            .await?;
+                        self.gateway
+                            .send_message(chat_id, &text::created_confirmation(&session), None)
+                            .await?;
+                    }
+                    Err(e) => {
+                        let prompt = if matches!(e, AppError::Domain(crate::domain::DomainError::InvalidSessionKey)) {
+                            "That session key is invalid. Enter a valid key like `AB7K-X92P`:
+"
+                        } else if matches!(e, AppError::Domain(crate::domain::DomainError::SessionKeyTaken)) {
+                            "That session key is already taken. Try another one:
+"
+                        } else {
+                            "Could not create the session. Enter a different session key:
+"
+                        };
+                        self.gateway
+                            .send_message(chat_id, &format!("❌ {prompt}"), None)
+                            .await?;
+                    }
                 }
             }
             ConvState::AwaitingSessionKey => match self.sessions.join_session(user, text).await {
