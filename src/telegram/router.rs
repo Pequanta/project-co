@@ -159,6 +159,9 @@ impl BotRouter {
             .split_whitespace()
             .next()
             .unwrap_or("")
+            .split('@')
+            .next()
+            .unwrap_or("")
             .to_ascii_lowercase();
         match name.as_str() {
             "start" => {
@@ -171,6 +174,7 @@ impl BotRouter {
                         Some(self.main_menu()),
                     )
                     .await?;
+                self.show_sessions(user, chat_id).await?;
             }
             "help" => {
                 self.gateway
@@ -199,6 +203,7 @@ impl BotRouter {
                     )
                     .await?;
             }
+            "sessions" => self.show_sessions(user, chat_id).await?,
             "status" | "plans" | "members" | "progress" | "plan" | "complete" | "leave" => {
                 self.require_session(user, chat_id, &name).await?;
             }
@@ -241,6 +246,34 @@ impl BotRouter {
         };
         self.send_chooser(chat_id, "Which session?", &list, prefix)
             .await
+    }
+
+    /// Show existing sessions as buttons. Membership from PostgreSQL remains
+    /// authoritative, so users never provide an unverified database UUID.
+    async fn show_sessions(&self, user: &User, chat_id: i64) -> Result<(), AppError> {
+        let list = self.sessions.list_sessions(user.id).await?;
+        match list.len() {
+            0 => {
+                self.gateway
+                    .send_message(
+                        chat_id,
+                        "You don't have any sessions yet. Create one, or join with a session key shared by a member.",
+                        Some(self.main_menu()),
+                    )
+                    .await?;
+            }
+            1 => self.send_status(user, chat_id, &list[0]).await?,
+            _ => {
+                self.send_chooser(
+                    chat_id,
+                    "Your sessions — tap one to open its dashboard:",
+                    &list,
+                    PREFIX_STATUS,
+                )
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     async fn act_on_session(
@@ -443,6 +476,7 @@ impl BotRouter {
                 ("➕ Create session".to_string(), "create".to_string()),
                 ("🔑 Join session".to_string(), "join".to_string()),
             ],
+            vec![("📁 My sessions".to_string(), "sessions".to_string())],
             vec![
                 ("📊 Status".to_string(), "status".to_string()),
                 ("📈 Progress".to_string(), "progress".to_string()),
@@ -511,6 +545,7 @@ impl BotRouter {
                     .send_message(chat_id, &text::help_text(), Some(self.main_menu()))
                     .await?;
             }
+            "sessions" => self.show_sessions(user, chat_id).await?,
             "status" | "plans" | "members" | "progress" | "plan" | "complete" | "leave" => {
                 self.require_session(user, chat_id, data).await?
             }

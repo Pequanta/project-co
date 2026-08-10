@@ -15,9 +15,12 @@ channel.
 4. Expose `http://localhost:8080/webhook` through an HTTPS tunnel for local bot
    testing, set `BOT_WEBHOOK_URL` to that public URL, and restart the process.
 
-The bot supports `/start`, `/create`, `/join`, `/status`, `/progress`, `/plan`,
-`/plans`, `/complete`, `/members`, `/leave`, and `/help`. Inline buttons are
-used whenever a session or plan needs selecting.
+The bot supports `/start`, `/create`, `/join`, `/sessions`, `/status`,
+`/progress`, `/plan`, `/plans`, `/complete`, `/members`, `/leave`, and `/help`.
+Use `/sessions` (or **My sessions**) to open an existing session. Inline buttons
+are used whenever a session or plan needs selecting; users never need to type a
+database session UUID. To join a session they do not belong to, they enter its
+shareable session key through `/join`.
 
 ## Configuration
 

@@ -25,6 +25,7 @@ pub fn help_text() -> String {
     "Here's what I can do:\n\n\
      /create — start a new collaboration session\n\
      /join — join a session with a key\n\
+     /sessions — open one of your existing sessions\n\
      /status — session dashboard (deadline, progress, plans, activity)\n\
      /progress — submit a progress update\n\
      /plan — add a new plan\n\
