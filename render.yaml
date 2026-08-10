@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: project-co
+    runtime: docker
+    region: frankfurt
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: project-co-db
+          property: connectionString
+      - key: BOT_TOKEN
+        sync: false
+      - key: BOT_WEBHOOK_SECRET
+        sync: false
+      - key: INTERNAL_API_KEY
+        sync: false
+      - key: DEADLINE_REMINDER_WINDOW_HOURS
+        value: "72"
+      - key: DEADLINE_REMINDER_INTERVAL_HOURS
+        value: "6"
+      - key: WEBHOOK_RATE_LIMIT_PER_MINUTE
+        value: "120"
+      - key: RUST_LOG
+        value: "info,tower_http=info,sqlx=warn"
+
+databases:
+  - name: project-co-db
+    databaseName: project_co
+    user: project_co
+    region: frankfurt
+    plan: free
+    postgresMajorVersion: "16"

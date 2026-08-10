@@ -42,6 +42,24 @@ The production image is built with `docker build -t project-co .`. Supply all
 required configuration at runtime and place the service behind an HTTPS reverse
 proxy. The image runs as a non-root user.
 
+## Deploy on Render
+
+Push this repository to GitHub or GitLab, then choose **New → Blueprint** in
+Render and select the repository. The included `render.yaml` creates the
+`project-co` Docker web service and a colocated Render Postgres database.
+
+Render prompts for `BOT_TOKEN`, `BOT_WEBHOOK_SECRET`, and `INTERNAL_API_KEY`;
+provide long, distinct secret values. Do not add them to `render.yaml`. The app
+binds to Render's `PORT`, runs migrations at startup, and uses
+`RENDER_EXTERNAL_URL` to register `https://<service>.onrender.com/webhook`
+with Telegram automatically. Configure a custom domain before deployment if
+you want Telegram to use that instead.
+
+The Blueprint defaults to Render's free plans for evaluation. Free services
+can spin down and free Postgres expires after 30 days, so use paid plans and
+backups for a production bot. After the deploy is healthy, send `/start` to
+the bot and confirm `https://<service>.onrender.com/healthz` returns 200.
+
 ## Security and operations
 
 Never commit `.env` or a bot token. Webhook requests require Telegram's secret

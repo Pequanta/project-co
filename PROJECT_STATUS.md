@@ -1,10 +1,10 @@
 # Project Status & Task List
 
-Status snapshot: **skeleton implemented, not yet compiled/verified.** ~4,100
-lines of Rust across 33 source files + 1 migration. See AGENTS.md for the
-non-negotiable architecture rules and workflow order.
+Status snapshot: **core implementation is compile-verified and locally
+database-verified.** See AGENTS.md for the non-negotiable architecture rules
+and workflow order.
 
-## Implemented (written, NOT yet compile-verified)
+## Implemented and verified
 
 | Area | Files | Notes |
 | --- | --- | --- |
@@ -18,19 +18,16 @@ non-negotiable architecture rules and workflow order.
 | Telegram adapter | `src/telegram/` | typed Bot API client, webhook handler (secret-token validate + update_id dedupe), router + conversation state machine, inline keyboards |
 | Internal API | `src/http/` | `POST /internal/notifications` (Bearer auth), `GET /healthz` |
 | Runtime | `src/main.rs`, `config.rs`, `state.rs`, `jobs.rs`, `telemetry.rs` | wiring, env config, deadline-reminder background sweep, tracing |
+| Security | `src/rate_limit.rs` | per-source-IP fixed-window webhook limiter; configurable by environment |
+| Operations | `Dockerfile`, `render.yaml`, `.github/workflows/ci.yml`, `README.md`, `docs/DESIGN.md` | non-root image, Render Blueprint, CI verification, quickstart and design/operations record |
 
 ## Not implemented / not yet done
 
-### 1. Build & compile verification (BLOCKER)
-- `cargo check` has NOT succeeded yet. Two attempts aborted: first a stuck
-  `cargo metadata` process held the package-cache lock; second run was aborted
-  by the user while resolving dependencies.
-- Fix lock issue (`pkill cargo`, clear `~/.cargo/registry/.package-cache`
-  if needed), then run `cargo check` (or `--offline` against the local cache).
-- Expect a few fixups: sqlx 0.9 API deltas (e.g. `Transaction` Deref,
-  feature names), enum `sqlx::Type`/`FromRow` mapping, unused-import warnings.
-- After it compiles: `cargo test` (unit tests only — no DB needed) and
-  `cargo clippy` + `cargo fmt`.
+### 1. Build & compile verification — complete
+- `cargo fmt --check`, `cargo check --offline`, `cargo test --offline` (13
+  tests), and `cargo clippy --offline -- -D warnings` pass.
+- A clean temporary PostgreSQL instance was used to verify migration/startup;
+  the application created all expected public schema tables.
 
 ### 2. Integration & E2E tests (needs a database)
 - No integration tests exist yet. Spec requires: registration, join, plan
@@ -48,12 +45,10 @@ non-negotiable architecture rules and workflow order.
 - No real-bot smoke test: commands, create/join flow, progress, complete,
   status dashboard, inline keyboards.
 
-### 4. Documentation
-- `README.md` does not exist: quickstart, env vars, run instructions,
-  webhook setup via BotFather, local dev, deploy, security notes.
-- Design deliverables 1–8 (architecture overview, component diagram, DB
-  schema, domain model, conversation flows, API spec, event model, Rust
-  structure) were never written as documents — only embodied in code.
+### 4. Documentation — complete
+- `README.md` covers quickstart, configuration, verification, deployment and
+  security. `docs/DESIGN.md` records architecture, schema/domain model,
+  conversation flows, API/event model, and scalability.
 
 ### 5. Edge cases (implemented in code, NOT tested)
 - invalid/duplicate session key, join already-joined, owner leaves with
@@ -63,18 +58,16 @@ non-negotiable architecture rules and workflow order.
   session key collision (retry loop).
 
 ### 6. Deployment & security hardening
-- No deployment config (Dockerfile, CI) — only `docker-compose.yml` for
-  Postgres.
-- No rate limiting layer on the webhook endpoint yet.
-- Webhook secret-token validation and internal API auth are implemented
-  but not penetration-checked.
+- Dockerfile, CI, webhook secret validation, internal API bearer auth, and an
+  in-process per-IP webhook limiter are implemented.
+- A shared rate limiter (for example at the gateway or Redis) is recommended
+  before horizontally scaling beyond one instance.
 
 ## Remaining todo list
 
-1. Fix cargo lock / network, then `cargo check` → fix compile errors → `cargo test` → `cargo clippy` → `cargo fmt`.
-2. `docker compose up -d postgres`; run migrations; boot the server locally.
-3. Integration tests (isolation + notification delivery) using `RecordingGateway`.
-4. E2E test for the multi-user scenario.
-5. `README.md` + design docs (architecture, schema, flows, API, events).
-6. Edge-case test coverage (blocked bot, duplicate updates, owner leave, double complete).
-7. Deployment: Dockerfile, CI, rate limiting, webhook lifecycle tooling.
+1. Add automated PostgreSQL integration tests for isolation and notification
+   delivery using `RecordingGateway`.
+2. Add the full multi-user E2E scenario and edge-case coverage (blocked bot,
+   duplicate updates, owner leave, and double completion).
+3. Before shared, multi-instance deployment, move rate limiting to a shared
+   gateway/store and add worker-based outbox retry processing.
