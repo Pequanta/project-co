@@ -13,6 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.75
+      - run: rustup component add rustfmt clippy
       - run: cargo fmt --check
       - run: cargo check --locked
       - run: cargo test --locked
