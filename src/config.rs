@@ -11,7 +11,8 @@ pub struct Config {
     /// Secret token Telegram sends as `X-Telegram-Bot-Api-Secret-Token` on
     /// every webhook request. Requests without it are rejected.
     pub webhook_secret: String,
-    /// If set, the bot registers its webhook on startup.
+    /// If set, the bot registers its webhook on startup. Render deployments
+    /// fall back to the platform-provided external URL plus `/webhook`.
     pub webhook_url: Option<String>,
     pub http_addr: std::net::SocketAddr,
     /// Bearer token protecting the internal API.
@@ -66,7 +67,15 @@ impl Config {
             database_url: require("DATABASE_URL")?,
             bot_token: require("BOT_TOKEN")?,
             webhook_secret: require("BOT_WEBHOOK_SECRET")?,
-            webhook_url: env::var("BOT_WEBHOOK_URL").ok().filter(|s| !s.is_empty()),
+            webhook_url: env::var("BOT_WEBHOOK_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    env::var("RENDER_EXTERNAL_URL")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .map(|url| format!("{}/webhook", url.trim_end_matches('/')))
+                }),
             http_addr,
             internal_api_key: require("INTERNAL_API_KEY")?,
             reminder_window_hours,
