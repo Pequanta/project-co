@@ -1,4 +1,5 @@
-FROM rust:1.85-bookworm AS build
+# sqlx 0.9 (locked in Cargo.lock) requires Rust 1.94 or newer.
+FROM rust:1.94-bookworm AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src

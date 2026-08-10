@@ -2,7 +2,7 @@
 name = "project-co"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.94"
 description = "Telegram collaboration & progress tracking system (serverless/webhook bot + backend service)"
 license = "MIT"
 
