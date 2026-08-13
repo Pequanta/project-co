@@ -185,7 +185,7 @@ impl TelegramGateway for ReqwestGateway {
         let params = SetWebhookParams {
             url,
             secret_token,
-            allowed_updates: vec!["message", "callback_query"],
+            allowed_updates: vec!["message", "channel_post", "callback_query"],
         };
         self.call("setWebhook", &params)
             .await

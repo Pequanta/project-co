@@ -16,7 +16,7 @@ use crate::error::AppError;
 use crate::repo::ConversationRepo;
 use crate::telegram::conversation::ConvState;
 use crate::telegram::gateway::TelegramGateway;
-use crate::telegram::types::{CallbackQuery, InlineKeyboardMarkup, Message, Update};
+use crate::telegram::types::{CallbackQuery, Chat, InlineKeyboardMarkup, Message, Update};
 use crate::text;
 
 const PREFIX_STATUS: &str = "st:";
@@ -66,6 +66,9 @@ impl BotRouter {
         if let Some(msg) = &update.message {
             self.handle_message(msg).await?;
         }
+        if let Some(post) = &update.channel_post {
+            self.handle_channel_post(post).await?;
+        }
         if let Some(cq) = &update.callback_query {
             self.handle_callback(cq).await?;
         }
@@ -87,16 +90,13 @@ impl BotRouter {
 
     async fn handle_message(&self, msg: &Message) -> Result<(), AppError> {
         let Some(from) = &msg.from else { return Ok(()) };
+        // Groups/supergroups expose only the broadcast-linking commands; the
+        // full interactive command set stays in private chats.
         if msg.chat.chat_type != "private" {
-            let _ = self
-                .gateway
-                .send_message(
-                    msg.chat.id,
-                    "I only work in private chats. Open a chat with me to use sessions.",
-                    None,
-                )
+            let text = msg.text.clone().unwrap_or_default();
+            return self
+                .handle_broadcast_command(&msg.chat, &text, Some(from))
                 .await;
-            return Ok(());
         }
 
         let user = self.ensure_user(from).await?;
@@ -150,6 +150,119 @@ impl BotRouter {
                 )
                 .await?;
             }
+        }
+        Ok(())
+    }
+
+    /// Channel posts carry no `from` user, so a link made from a channel is
+    /// attributed to nobody (`linked_by = NULL`). Command surface is otherwise
+    /// identical to groups.
+    async fn handle_channel_post(&self, msg: &Message) -> Result<(), AppError> {
+        let text = msg.text.clone().unwrap_or_default();
+        self.handle_broadcast_command(&msg.chat, &text, None).await
+    }
+
+    /// The only commands a group/supergroup/channel understands: `/link` a
+    /// session to this chat so its notifications post here, and `/unlink` to
+    /// stop. The session key is the linking capability (same trust model as
+    /// `/join`). Non-command text and unknown commands are ignored so the bot
+    /// never spams a shared chat.
+    async fn handle_broadcast_command(
+        &self,
+        chat: &Chat,
+        text: &str,
+        linker: Option<&crate::telegram::types::User>,
+    ) -> Result<(), AppError> {
+        let Some((name, arg)) = parse_broadcast_command(text) else {
+            return Ok(());
+        };
+        let arg = arg.as_deref();
+
+        match name.as_str() {
+            "link" => {
+                let Some(key) = arg else {
+                    self.gateway
+                        .send_message(
+                            chat.id,
+                            "Usage: `/link <SESSION_KEY>` — I'll post that session's updates in this chat.",
+                            None,
+                        )
+                        .await?;
+                    return Ok(());
+                };
+                let linked_by = match linker {
+                    Some(tg) => Some(self.ensure_user(tg).await?.id),
+                    None => None,
+                };
+                match self
+                    .sessions
+                    .link_broadcast(key, chat.id, &chat.chat_type, None, linked_by)
+                    .await
+                {
+                    Ok((session, true)) => {
+                        self.gateway
+                            .send_message(
+                                chat.id,
+                                &format!(
+                                    "✅ Linked to *{}*. This session's updates will post here instead of member DMs.",
+                                    session.project_name
+                                ),
+                                None,
+                            )
+                            .await?;
+                    }
+                    Ok((session, false)) => {
+                        self.gateway
+                            .send_message(
+                                chat.id,
+                                &format!(
+                                    "ℹ️ This chat is already linked to *{}*.",
+                                    session.project_name
+                                ),
+                                None,
+                            )
+                            .await?;
+                    }
+                    Err(e) => {
+                        self.gateway
+                            .send_message(chat.id, &format!("❌ Could not link: {e}"), None)
+                            .await?;
+                    }
+                }
+            }
+            "unlink" => match self.sessions.unlink_broadcast(chat.id, arg).await {
+                Ok(0) => {
+                    self.gateway
+                        .send_message(chat.id, "This chat wasn't linked to any session.", None)
+                        .await?;
+                }
+                Ok(n) => {
+                    self.gateway
+                        .send_message(
+                            chat.id,
+                            &format!(
+                                "✅ Unlinked {n} session(s). Updates will no longer post in this chat."
+                            ),
+                            None,
+                        )
+                        .await?;
+                }
+                Err(e) => {
+                    self.gateway
+                        .send_message(chat.id, &format!("❌ Could not unlink: {e}"), None)
+                        .await?;
+                }
+            },
+            "start" | "help" => {
+                self.gateway
+                    .send_message(
+                        chat.id,
+                        "Add me to this chat, then send `/link <SESSION_KEY>` to receive that session's updates here. Send `/unlink` to stop.",
+                        None,
+                    )
+                    .await?;
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -1058,6 +1171,25 @@ fn parse_uuid(s: &str) -> Option<Uuid> {
     Uuid::parse_str(s).ok()
 }
 
+/// Parse a command sent to a group/channel into `(name, optional argument)`,
+/// stripping any `@botname` suffix like the private-chat command parser does.
+/// Returns `None` for plain text (no leading `/`) or an empty command.
+fn parse_broadcast_command(text: &str) -> Option<(String, Option<String>)> {
+    let rest = text.trim().strip_prefix('/')?;
+    let mut parts = rest.split_whitespace();
+    let name = parts
+        .next()
+        .unwrap_or("")
+        .split('@')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, parts.next().map(|s| s.to_string())))
+}
+
 /// Loosely parse the user's mode choice from the /create flow.
 fn parse_mode(s: &str) -> Option<SessionMode> {
     match s.trim().to_ascii_lowercase().as_str() {
@@ -1162,5 +1294,43 @@ mod tests {
         );
         assert!(payload_get_uuid(&v, "sid").is_some());
         assert_eq!(payload_get_array(&v, "missing"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn broadcast_command_parsing() {
+        // Plain text (no leading slash) is not a command.
+        assert_eq!(parse_broadcast_command("hello there"), None);
+        assert_eq!(parse_broadcast_command("/"), None);
+
+        // `/link KEY` — name lowercased, key preserved verbatim.
+        assert_eq!(
+            parse_broadcast_command("/link AB7K-X92P"),
+            Some(("link".to_string(), Some("AB7K-X92P".to_string())))
+        );
+        // The `@botname` suffix Telegram appends in groups is stripped.
+        assert_eq!(
+            parse_broadcast_command("/link@my_bot AB7K-X92P"),
+            Some(("link".to_string(), Some("AB7K-X92P".to_string())))
+        );
+        assert_eq!(
+            parse_broadcast_command("/LINK ab7kx92p"),
+            Some(("link".to_string(), Some("ab7kx92p".to_string())))
+        );
+
+        // `/link` with no key parses to a name and no arg (handler shows usage).
+        assert_eq!(
+            parse_broadcast_command("/link"),
+            Some(("link".to_string(), None))
+        );
+
+        // `/unlink` with and without an optional key.
+        assert_eq!(
+            parse_broadcast_command("/unlink"),
+            Some(("unlink".to_string(), None))
+        );
+        assert_eq!(
+            parse_broadcast_command("/unlink@my_bot AB7K-X92P"),
+            Some(("unlink".to_string(), Some("AB7K-X92P".to_string())))
+        );
     }
 }

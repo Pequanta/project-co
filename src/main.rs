@@ -32,10 +32,10 @@ use crate::rate_limit::WebhookRateLimiter;
 use crate::repo::{
     pg::{
         PgConversationRepo, PgDedupeRepo, PgNotificationRepo, PgPlanCompletionRepo, PgPlanRepo,
-        PgProgressRepo, PgSessionRepo, PgUserRepo,
+        PgProgressRepo, PgSessionBroadcastRepo, PgSessionRepo, PgUserRepo,
     },
     ConversationRepo, DedupeRepo, NotificationRepo, PlanCompletionRepo, PlanRepo, ProgressRepo,
-    SessionRepo, UserRepo,
+    SessionBroadcastRepo, SessionRepo, UserRepo,
 };
 use crate::state::AppState;
 use crate::telegram::gateway::{ReqwestGateway, TelegramGateway};
@@ -71,6 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let progress_repo: Arc<dyn ProgressRepo> = Arc::new(PgProgressRepo);
     let notifications_repo: Arc<dyn NotificationRepo> = Arc::new(PgNotificationRepo);
     let conversations_repo: Arc<dyn ConversationRepo> = Arc::new(PgConversationRepo);
+    let broadcasts_repo: Arc<dyn SessionBroadcastRepo> = Arc::new(PgSessionBroadcastRepo);
     let dedupe_repo: Arc<dyn DedupeRepo> = Arc::new(PgDedupeRepo);
 
     let calculator: Arc<dyn ProgressCalculator> = Arc::new(SimpleProgressCalculator);
@@ -80,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pool.clone(),
         users_repo.clone(),
         sessions_repo.clone(),
+        broadcasts_repo.clone(),
         plans_repo.clone(),
         completions_repo.clone(),
         progress_repo.clone(),
@@ -97,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pool.clone(),
         users_repo.clone(),
         sessions_repo.clone(),
+        broadcasts_repo.clone(),
         plans_repo.clone(),
         completions_repo.clone(),
         progress_repo.clone(),

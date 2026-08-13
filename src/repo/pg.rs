@@ -14,8 +14,9 @@ use crate::domain::{
     SessionStatus, User,
 };
 use crate::repo::{
-    Conversation, ConversationRepo, DedupeRepo, EventRepo, NewSession, NotificationRepo,
-    PlanCompletionRepo, PlanRepo, ProgressRepo, SessionRepo, UserRepo,
+    BroadcastTarget, Conversation, ConversationRepo, DedupeRepo, EventRepo, NewSession,
+    NotificationRepo, PlanCompletionRepo, PlanRepo, ProgressRepo, SessionBroadcastRepo,
+    SessionRepo, UserRepo,
 };
 
 pub struct PgUserRepo;
@@ -517,6 +518,95 @@ impl NotificationRepo for PgNotificationRepo {
         .execute(exec)
         .await
         .map(|_| ())
+    }
+}
+
+pub struct PgSessionBroadcastRepo;
+
+#[async_trait]
+impl SessionBroadcastRepo for PgSessionBroadcastRepo {
+    async fn add(
+        &self,
+        exec: &mut PgConnection,
+        session_id: Uuid,
+        chat_id: i64,
+        chat_type: &str,
+        title: Option<&str>,
+        linked_by: Option<Uuid>,
+    ) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query(
+            r#"INSERT INTO session_broadcast_targets
+                 (session_id, chat_id, chat_type, title, linked_by)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (session_id, chat_id) DO NOTHING"#,
+        )
+        .bind(session_id)
+        .bind(chat_id)
+        .bind(chat_type)
+        .bind(title)
+        .bind(linked_by)
+        .execute(exec)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    async fn list_for_session(
+        &self,
+        exec: &mut PgConnection,
+        session_id: Uuid,
+    ) -> Result<Vec<BroadcastTarget>, sqlx::Error> {
+        #[derive(FromRow)]
+        struct Row {
+            session_id: Uuid,
+            chat_id: i64,
+            chat_type: String,
+            title: Option<String>,
+        }
+        let rows = sqlx::query_as::<_, Row>(
+            "SELECT session_id, chat_id, chat_type, title FROM session_broadcast_targets \
+             WHERE session_id = $1 ORDER BY created_at ASC",
+        )
+        .bind(session_id)
+        .fetch_all(exec)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| BroadcastTarget {
+                session_id: r.session_id,
+                chat_id: r.chat_id,
+                chat_type: r.chat_type,
+                title: r.title,
+            })
+            .collect())
+    }
+
+    async fn remove(
+        &self,
+        exec: &mut PgConnection,
+        session_id: Uuid,
+        chat_id: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query(
+            "DELETE FROM session_broadcast_targets WHERE session_id = $1 AND chat_id = $2",
+        )
+        .bind(session_id)
+        .bind(chat_id)
+        .execute(exec)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    async fn remove_all_for_chat(
+        &self,
+        exec: &mut PgConnection,
+        chat_id: i64,
+    ) -> Result<Vec<Uuid>, sqlx::Error> {
+        sqlx::query_scalar::<_, Uuid>(
+            "DELETE FROM session_broadcast_targets WHERE chat_id = $1 RETURNING session_id",
+        )
+        .bind(chat_id)
+        .fetch_all(exec)
+        .await
     }
 }
 

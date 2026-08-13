@@ -10,7 +10,8 @@ use crate::error::AppError;
 use crate::notify::messages::{event_text, NotifyCtx};
 use crate::notify::Notifier;
 use crate::repo::{
-    NotificationRepo, PlanCompletionRepo, PlanRepo, ProgressRepo, SessionRepo, UserRepo,
+    NotificationRepo, PlanCompletionRepo, PlanRepo, ProgressRepo, SessionBroadcastRepo,
+    SessionRepo, UserRepo,
 };
 use crate::telegram::gateway::TelegramGateway;
 use crate::text;
@@ -22,6 +23,7 @@ pub struct NotificationService {
     db: PgPool,
     users: Arc<dyn UserRepo>,
     sessions: Arc<dyn SessionRepo>,
+    broadcasts: Arc<dyn SessionBroadcastRepo>,
     plans: Arc<dyn PlanRepo>,
     completions: Arc<dyn PlanCompletionRepo>,
     progress: Arc<dyn ProgressRepo>,
@@ -36,6 +38,7 @@ impl NotificationService {
         db: PgPool,
         users: Arc<dyn UserRepo>,
         sessions: Arc<dyn SessionRepo>,
+        broadcasts: Arc<dyn SessionBroadcastRepo>,
         plans: Arc<dyn PlanRepo>,
         completions: Arc<dyn PlanCompletionRepo>,
         progress: Arc<dyn ProgressRepo>,
@@ -47,6 +50,7 @@ impl NotificationService {
             db,
             users,
             sessions,
+            broadcasts,
             plans,
             completions,
             progress,
@@ -74,13 +78,6 @@ impl Notifier for NotificationService {
             return Ok(()); // session gone (e.g. archived), nothing to notify
         };
         let members = self.sessions.members(&mut conn, session_id).await?;
-        let recipients: Vec<&SessionMember> = members
-            .iter()
-            .filter(|m| Some(m.user_id) != actor_id)
-            .collect();
-        if recipients.is_empty() {
-            return Ok(()); // nobody to broadcast to
-        }
 
         let actor_name = match actor_id {
             Some(id) => self.users.get(&mut conn, id).await?.map(|u| u.display_name),
@@ -132,6 +129,56 @@ impl Notifier for NotificationService {
             return Ok(());
         }
 
+        // Linked chats replace member DMs: when a session is linked to one or
+        // more groups/channels, post the notification there and skip DMs. This
+        // fires even for a solo session, so the actor is not filtered out here.
+        let targets = self
+            .broadcasts
+            .list_for_session(&mut conn, session_id)
+            .await?;
+        if !targets.is_empty() {
+            for target in &targets {
+                let notification_id = self
+                    .notifications
+                    .create_pending(
+                        &mut conn,
+                        event_id.unwrap_or(0),
+                        session_id,
+                        target.chat_id,
+                        &message,
+                    )
+                    .await?;
+                match self
+                    .gateway
+                    .send_message(target.chat_id, &message, None)
+                    .await
+                {
+                    Ok(_) => {
+                        self.notifications
+                            .mark_result(&mut conn, notification_id, true, None)
+                            .await?;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            chat_id = target.chat_id,
+                            event = event.name(),
+                            error = %e,
+                            "broadcast delivery failed (bot removed from chat?)"
+                        );
+                        self.notifications
+                            .mark_result(&mut conn, notification_id, false, Some(&e.to_string()))
+                            .await?;
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        // No linked chats: DM each member except the actor.
+        let recipients: Vec<&SessionMember> = members
+            .iter()
+            .filter(|m| Some(m.user_id) != actor_id)
+            .collect();
         for member in recipients {
             let Some(tg_id) = self
                 .users

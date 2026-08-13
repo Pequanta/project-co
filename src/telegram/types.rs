@@ -8,6 +8,10 @@ pub struct Update {
     pub update_id: i64,
     #[serde(default)]
     pub message: Option<Message>,
+    /// Posts in a channel the bot administers. Same shape as `message`, but
+    /// carries no `from` user.
+    #[serde(default)]
+    pub channel_post: Option<Message>,
     #[serde(default)]
     pub callback_query: Option<CallbackQuery>,
 }

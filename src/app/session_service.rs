@@ -11,12 +11,16 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::eventing::EventPublisher;
-use crate::repo::{NewSession, PlanCompletionRepo, PlanRepo, ProgressRepo, SessionRepo, UserRepo};
+use crate::repo::{
+    NewSession, PlanCompletionRepo, PlanRepo, ProgressRepo, SessionBroadcastRepo, SessionRepo,
+    UserRepo,
+};
 
 pub struct SessionService {
     db: PgPool,
     users: Arc<dyn UserRepo>,
     sessions: Arc<dyn SessionRepo>,
+    broadcasts: Arc<dyn SessionBroadcastRepo>,
     plans: Arc<dyn PlanRepo>,
     completions: Arc<dyn PlanCompletionRepo>,
     progress: Arc<dyn ProgressRepo>,
@@ -30,6 +34,7 @@ impl SessionService {
         db: PgPool,
         users: Arc<dyn UserRepo>,
         sessions: Arc<dyn SessionRepo>,
+        broadcasts: Arc<dyn SessionBroadcastRepo>,
         plans: Arc<dyn PlanRepo>,
         completions: Arc<dyn PlanCompletionRepo>,
         progress: Arc<dyn ProgressRepo>,
@@ -40,6 +45,7 @@ impl SessionService {
             db,
             users,
             sessions,
+            broadcasts,
             plans,
             completions,
             progress,
@@ -281,6 +287,69 @@ impl SessionService {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Link a group/channel chat to a session so its notifications post there.
+    /// Authorization is possession of the secret session key (same capability
+    /// as joining), so no prior membership is required — this lets a channel,
+    /// which carries no `from` user, be linked as well. Returns the session and
+    /// whether a new link was created (`false` = the chat was already linked).
+    pub async fn link_broadcast(
+        &self,
+        raw_key: &str,
+        chat_id: i64,
+        chat_type: &str,
+        title: Option<&str>,
+        linked_by: Option<Uuid>,
+    ) -> Result<(Session, bool), AppError> {
+        let key = crate::domain::normalize_key(raw_key);
+        if key.len() != 8 {
+            return Err(DomainError::InvalidSessionKey.into());
+        }
+        let mut conn = self.db.acquire().await?;
+        let Some(session) = self.sessions.get_by_key(&mut conn, &key).await? else {
+            return Err(DomainError::InvalidSessionKey.into());
+        };
+        if session.status != SessionStatus::Active {
+            return Err(DomainError::SessionClosed.into());
+        }
+        let newly = self
+            .broadcasts
+            .add(&mut conn, session.id, chat_id, chat_type, title, linked_by)
+            .await?;
+        Ok((session, newly))
+    }
+
+    /// Stop broadcasting to a chat. With a key, only that session's link is
+    /// removed; without one, every session linked to the chat is unlinked
+    /// (a fail-safe "stop sending here"). Returns how many links were removed.
+    pub async fn unlink_broadcast(
+        &self,
+        chat_id: i64,
+        raw_key: Option<&str>,
+    ) -> Result<usize, AppError> {
+        let mut conn = self.db.acquire().await?;
+        match raw_key {
+            Some(raw) => {
+                let key = crate::domain::normalize_key(raw);
+                if key.len() != 8 {
+                    return Err(DomainError::InvalidSessionKey.into());
+                }
+                let Some(session) = self.sessions.get_by_key(&mut conn, &key).await? else {
+                    return Err(DomainError::InvalidSessionKey.into());
+                };
+                let removed = self
+                    .broadcasts
+                    .remove(&mut conn, session.id, chat_id)
+                    .await?;
+                Ok(usize::from(removed))
+            }
+            None => Ok(self
+                .broadcasts
+                .remove_all_for_chat(&mut conn, chat_id)
+                .await?
+                .len()),
+        }
     }
 }
 

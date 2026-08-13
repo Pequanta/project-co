@@ -22,6 +22,23 @@ are used whenever a session or plan needs selecting; users never need to type a
 database session UUID. To join a session they do not belong to, they enter its
 shareable session key through `/join`.
 
+## Broadcast to a group or channel
+
+By default each session's updates are delivered as private DMs to its members.
+A session can instead post its updates into a Telegram group or channel:
+
+1. Add the bot to the group, or add it as an **admin** of the channel (a channel
+   admin is required for the bot to receive posts).
+2. In that chat, send `/link <SESSION_KEY>` — the same key used to `/join`.
+3. From then on, that session's notifications post in the chat and member DMs
+   are skipped. Send `/unlink` to stop (or `/unlink <SESSION_KEY>` to remove
+   just one session when several are linked to the chat).
+
+Anyone holding the session key can link a chat they control, which is the same
+capability `/join` already grants. Interactive commands (create, join, progress,
+etc.) remain private-DM only; groups and channels understand only `/link` and
+`/unlink`.
+
 ## Configuration
 
 Required: `DATABASE_URL`, `BOT_TOKEN`, `BOT_WEBHOOK_SECRET`, and

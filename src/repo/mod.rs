@@ -240,6 +240,54 @@ pub trait NotificationRepo: Send + Sync {
     ) -> Result<(), sqlx::Error>;
 }
 
+/// A Telegram group/channel that a session broadcasts its notifications to.
+#[derive(Debug, Clone)]
+pub struct BroadcastTarget {
+    #[allow(dead_code)]
+    pub session_id: Uuid,
+    pub chat_id: i64,
+    #[allow(dead_code)]
+    pub chat_type: String,
+    #[allow(dead_code)]
+    pub title: Option<String>,
+}
+
+#[async_trait]
+pub trait SessionBroadcastRepo: Send + Sync {
+    /// Link a chat to a session. Idempotent: an existing link is left as-is.
+    /// Returns `true` only when a new link was created, so the caller can
+    /// distinguish "linked" from "already linked".
+    async fn add(
+        &self,
+        exec: &mut PgConnection,
+        session_id: Uuid,
+        chat_id: i64,
+        chat_type: &str,
+        title: Option<&str>,
+        linked_by: Option<Uuid>,
+    ) -> Result<bool, sqlx::Error>;
+
+    async fn list_for_session(
+        &self,
+        exec: &mut PgConnection,
+        session_id: Uuid,
+    ) -> Result<Vec<BroadcastTarget>, sqlx::Error>;
+
+    async fn remove(
+        &self,
+        exec: &mut PgConnection,
+        session_id: Uuid,
+        chat_id: i64,
+    ) -> Result<bool, sqlx::Error>;
+
+    /// Remove every link for a chat. Returns the affected session ids.
+    async fn remove_all_for_chat(
+        &self,
+        exec: &mut PgConnection,
+        chat_id: i64,
+    ) -> Result<Vec<Uuid>, sqlx::Error>;
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Conversation {
