@@ -619,10 +619,17 @@ impl BotRouter {
         let data = cq.data.clone().unwrap_or_default();
         let chat_id = cq.message.as_ref().map(|m| m.chat.id).unwrap_or(cq.from.id);
         let result = self.dispatch_callback(&user, chat_id, &data).await;
-        if let Err(e) = &result {
-            tracing::warn!(error = %e, "callback handler error");
-        }
-        let _ = self.gateway.answer_callback_query(&cq.id, None).await;
+        // Always answer to clear Telegram's spinner. On failure, show a short,
+        // generic toast (details go to the log, not the user) so a tap never
+        // silently does nothing.
+        let ack = match &result {
+            Ok(()) => None,
+            Err(e) => {
+                tracing::warn!(error = %e, "callback handler error");
+                Some("Something went wrong — please try again.")
+            }
+        };
+        let _ = self.gateway.answer_callback_query(&cq.id, ack).await;
         result
     }
 

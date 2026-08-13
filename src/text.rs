@@ -15,6 +15,55 @@ pub fn days_remaining(deadline: DateTime<Utc>, now: DateTime<Utc>) -> i64 {
     (secs + 86_399) / 86_400
 }
 
+/// Budget for a single Telegram message. The Bot API rejects any `sendMessage`
+/// whose text exceeds 4096 UTF-16 code units ("Bad Request: message is too
+/// long"). A string's UTF-8 byte length is always ≥ its UTF-16 unit count, so
+/// keeping byte length under 4096 is a safe over-approximation; we leave
+/// headroom below that.
+pub const TELEGRAM_MAX_LEN: usize = 4000;
+
+/// Split `text` into chunks that each fit within [`TELEGRAM_MAX_LEN`], so a
+/// long listing (many/large plans, members, or activity) can be delivered as
+/// several messages instead of being rejected wholesale. Splitting is done on
+/// line boundaries because every Markdown span this crate emits stays within a
+/// single line — so a line-aligned split never bisects a `*bold*` or `` `code` ``
+/// entity. A single line that alone exceeds the budget is hard-split at UTF-8
+/// char boundaries as a last resort. Always returns at least one chunk, and the
+/// concatenation of the chunks equals the input.
+pub fn split_message(text: &str) -> Vec<String> {
+    if text.len() <= TELEGRAM_MAX_LEN {
+        return vec![text.to_string()];
+    }
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for line in text.split_inclusive('\n') {
+        if line.len() > TELEGRAM_MAX_LEN {
+            if !current.is_empty() {
+                chunks.push(std::mem::take(&mut current));
+            }
+            let mut rest = line;
+            while rest.len() > TELEGRAM_MAX_LEN {
+                let mut idx = TELEGRAM_MAX_LEN;
+                while !rest.is_char_boundary(idx) {
+                    idx -= 1;
+                }
+                chunks.push(rest[..idx].to_string());
+                rest = &rest[idx..];
+            }
+            current.push_str(rest);
+        } else {
+            if current.len() + line.len() > TELEGRAM_MAX_LEN {
+                chunks.push(std::mem::take(&mut current));
+            }
+            current.push_str(line);
+        }
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
 pub fn welcome_text(name: &str) -> String {
     format!(
         "👋 Hi {name}!\n\nI help small teams track progress in a shared collaboration session.\n\nUse the buttons below, or type /help for all commands."
@@ -197,4 +246,44 @@ pub fn dashboard_text(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_message_keeps_short_text_as_one_chunk() {
+        assert_eq!(split_message(""), vec![String::new()]);
+        let s = "📋 Plans\n  • one\n  • two";
+        assert_eq!(split_message(s), vec![s.to_string()]);
+    }
+
+    #[test]
+    fn split_message_breaks_long_listing_on_line_boundaries() {
+        let line = "  • a reasonably long plan title goes right about here\n";
+        let big = line.repeat(400); // comfortably over the limit
+        let chunks = split_message(&big);
+
+        assert!(chunks.len() > 1, "long text should span multiple chunks");
+        for c in &chunks {
+            assert!(c.len() <= TELEGRAM_MAX_LEN, "chunk too long: {}", c.len());
+            // Every chunk begins at a line start, so no Markdown span is bisected.
+            assert!(c.starts_with("  •"));
+        }
+        assert_eq!(chunks.concat(), big, "chunks must reassemble to the input");
+    }
+
+    #[test]
+    fn split_message_hard_splits_a_single_oversized_line() {
+        // One line with no newline to break on, larger than two full chunks.
+        let big = "x".repeat(TELEGRAM_MAX_LEN * 2 + 37);
+        let chunks = split_message(&big);
+
+        assert!(chunks.len() >= 3);
+        for c in &chunks {
+            assert!(c.len() <= TELEGRAM_MAX_LEN);
+        }
+        assert_eq!(chunks.concat(), big);
+    }
 }

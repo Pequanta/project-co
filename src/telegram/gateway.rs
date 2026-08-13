@@ -138,9 +138,24 @@ impl TelegramGateway for ReqwestGateway {
         text: &str,
         reply_markup: Option<InlineKeyboardMarkup>,
     ) -> Result<SendMessageResult, GatewayError> {
+        // Telegram rejects overlong messages; split and send in order. Any
+        // keyboard rides on the final chunk so it appears beneath the full
+        // text. The common single-chunk case sends exactly one request, as
+        // before.
+        let mut chunks = crate::text::split_message(text);
+        let last = chunks.pop().expect("split_message always returns a chunk");
+        for chunk in &chunks {
+            let params = SendMessageParams {
+                chat_id,
+                text: chunk,
+                parse_mode: "Markdown",
+                reply_markup: None,
+            };
+            let _: SendMessageResult = self.call("sendMessage", &params).await?;
+        }
         let params = SendMessageParams {
             chat_id,
-            text,
+            text: &last,
             parse_mode: "Markdown",
             reply_markup,
         };
